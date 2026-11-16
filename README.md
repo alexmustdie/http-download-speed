@@ -7,9 +7,10 @@ Requires Python 3.9 or later and uses only the standard library.
 python3 download_speed.py 'https://your-server.example/large-file'
 ```
 
-Replace the example URL with a direct link to a file. Redirects are reported
-as errors; use the final URL. The script stops on the first failed request,
-reports the error on stderr, and exits with status 1.
+Replace the example URL with a direct link to a file. Use the final URL
+after any redirects. The script stops on the first failed request (including
+a redirect or HTTP 206 Partial Content), reports the error on stderr, and
+exits with status 1.
 
 The script performs 10 sequential GETs and reads each response body in chunks.
 Request time runs from opening the connection through reading the entire body.
@@ -19,8 +20,8 @@ Speed is (total bytes × 8) / (sum of request times × 1,000,000), in decimal
 megabits per second (Mbit/s). It reflects the path to the chosen server and
 includes connection setup and server response time.
 
-Use `--timeout SECONDS` to change the socket timeout (default: 30 seconds).
-This limits individual blocking socket operations.
+Use `--timeout SECONDS` to change the socket timeout (default: 30 seconds,
+maximum: 3600 seconds). This limits individual blocking socket operations.
 
 Run the local HTTP integration tests with:
 

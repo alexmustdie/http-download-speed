@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 import unittest
@@ -12,6 +13,8 @@ PAYLOAD = b"x" * 150_000
 
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def do_GET(self):
         path = self.path
         self.server.calls[path] += 1
@@ -25,6 +28,29 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/stall":
             sleep(0.5)
+            return
+        if path == "/partial":
+            self.send_response(206)
+            self.send_header("Content-Range", "bytes 0-2/150000")
+            self.send_header("Content-Length", "3")
+            self.end_headers()
+            self.wfile.write(b"xxx")
+            return
+        if path == "/conflicting-lengths":
+            self.send_response(200)
+            self.send_header("Content-Length", "3")
+            self.send_header("Content-Length", "10")
+            self.end_headers()
+            self.wfile.write(b"xxx")
+            return
+        if path in {"/chunked", "/unsupported-encoding", "/truncated-chunked"}:
+            encoding = "gzip, chunked" if path == "/unsupported-encoding" else "chunked"
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", encoding)
+            self.end_headers()
+            self.wfile.write(b"3\r\nabc\r\n2\r\nde\r\n")
+            if path != "/truncated-chunked":
+                self.wfile.write(b"0\r\n\r\n")
             return
 
         self.send_response(200)
@@ -67,6 +93,7 @@ class DownloadSpeedTests(unittest.TestCase):
             [sys.executable, str(SCRIPT), f"http://127.0.0.1:{self.server.server_port}{path}", *args],
             capture_output=True,
             text=True,
+            env={**os.environ, "no_proxy": "127.0.0.1"},
             timeout=8,
         )
 
@@ -101,11 +128,37 @@ class DownloadSpeedTests(unittest.TestCase):
         self.assertIn("incomplete response", result.stderr)
         self.assertEqual(result.stdout, "")
 
+    def test_chunked_download_counts_only_body_bytes(self):
+        result = self.run_cli("/chunked")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.server.calls["/chunked"], 10)
+        self.assertIn("Total downloaded: 50 bytes", result.stdout)
+
+    def test_partial_or_ambiguously_framed_response_fails(self):
+        cases = [
+            ("/partial", "HTTP 206 Partial Content"),
+            ("/conflicting-lengths", "ambiguous Content-Length"),
+            ("/unsupported-encoding", "Transfer-Encoding"),
+            ("/truncated-chunked", "IncompleteRead"),
+        ]
+        for path, message in cases:
+            with self.subTest(path=path):
+                result = self.run_cli(path)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(message, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(self.server.calls[path], 1)
+
     def test_socket_timeout_fails(self):
         result = self.run_cli("/stall", "--timeout", "0.05")
         self.assertEqual(result.returncode, 1)
         self.assertIn("timed out", result.stderr)
         self.assertEqual(result.stdout, "")
+
+    def test_rejects_out_of_range_timeout(self):
+        result = self.run_cli("/file", "--timeout", "1e100")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("expected seconds greater than 0 and at most 3600", result.stderr)
 
     def test_rejects_non_http_url(self):
         result = subprocess.run(
